@@ -1,0 +1,48 @@
+{
+  "name": "@veilgate/node",
+  "version": "0.1.0",
+  "description": "Node.js SDK for VeilGate — attach bearer tokens and sign HMAC requests in server-to-server calls",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.cjs.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c && tsc --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-vm-modules node_modules/.bin/vitest run"
+  },
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^11.1.6",
+    "rollup": "^4.13.0",
+    "tslib": "^2.6.2",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0",
+    "@types/node": "^20.12.7"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/C0oki3s/veilgate-node.git"
+  },
+  "keywords": [
+    "veilgate",
+    "security",
+    "hmac",
+    "bearer",
+    "bot-detection",
+    "server-to-server"
+  ]
+}
