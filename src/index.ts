@@ -7,10 +7,10 @@
  *      bearerFetch("vg_live_abc123")
  *      hmacFetch({ clientId: "payments", secret: process.env.VG_SECRET! })
  *
- * 2. Decoy response headers — add tarpit breadcrumbs to your API's outgoing
- *    responses so agents probing the API discover and follow realistic paths
- *    into VeilGate's tarpit instead of real endpoints:
- *      app.use(decoyMiddleware({ baseURL: "https://api.example.com" }))
+ * 2. Breadcrumb response headers — add registered handler paths to your API's
+ *    outgoing responses so agents probing the API discover and follow realistic
+ *    paths to registered handlers instead of real endpoints:
+ *      app.use(breadcrumbMiddleware({ baseURL: "https://api.example.com" }))
  *
  * 3. Signature verification — validate inbound HMAC signatures in tests or
  *    custom middleware.
@@ -23,8 +23,8 @@ import { createHmac, timingSafeEqual, createHash } from "node:crypto";
 // ---------------------------------------------------------------------------
 
 /**
- * One bait endpoint entry from /__veilgate/.well-known tarpit.paths,
- * or supplied manually via DecoyOptions.paths.
+ * One registered path entry from /_g/config routes.paths,
+ * or supplied manually via BreadcrumbOptions.paths.
  */
 export interface TarpitPathEntry {
   path: string;
@@ -32,29 +32,29 @@ export interface TarpitPathEntry {
   service?: string;
 }
 
-export interface DecoyOptions {
+export interface BreadcrumbOptions {
   /**
    * Base URL of the VeilGate-protected server.
-   * Used to fetch /__veilgate/.well-known for decoy path discovery.
+   * Used to fetch /_g/config for route manifest discovery.
    * Example: "https://api.example.com". Defaults to "" (same host).
    */
   baseURL?: string;
 
   /**
-   * Override the decoy path list entirely. When omitted the middleware
-   * fetches paths from /__veilgate/.well-known on first use, falling back
+   * Override the path list entirely. When omitted the middleware
+   * fetches paths from /_g/config on first use, falling back
    * to the built-in pool if discovery fails.
    */
   paths?: TarpitPathEntry[];
 
   /**
-   * Number of decoy paths to inject per response. Default: 3.
+   * Number of paths to inject per response. Default: 3.
    * Higher values expose more breadcrumbs but add header bloat.
    */
   count?: number;
 
   /**
-   * Inject a `Link:` header with RFC 8288 relation types pointing to decoy
+   * Inject a `Link:` header with RFC 8288 relation types pointing to registered handler
    * paths. Link headers are followed by crawlers and API-probing scanners.
    * Default: true.
    */
@@ -70,15 +70,18 @@ export interface DecoyOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** @deprecated Use BreadcrumbOptions. */
+export type DecoyOptions = BreadcrumbOptions;
+
 /**
- * The object returned by decoyMiddleware(). Callable as a standard
+ * The object returned by breadcrumbMiddleware(). Callable as a standard
  * Express/Fastify/Node middleware function, and also exposes runtime
- * controls for enabling, disabling, and reconfiguring decoys.
+ * controls for enabling, disabling, and reconfiguring breadcrumbs.
  */
-export interface DecoyMiddlewareFn {
+export interface BreadcrumbMiddlewareFn {
   (req: unknown, res: { setHeader(name: string, value: string): void }, next: () => void): void;
   /**
-   * Enable or disable decoy header injection without recreating the middleware.
+   * Enable or disable breadcrumb header injection without recreating the middleware.
    * When disabled, next() is called immediately with no headers added.
    */
   setEnabled(enabled: boolean): void;
@@ -86,8 +89,11 @@ export interface DecoyMiddlewareFn {
    * Merge new options into the running middleware. Changing baseURL or paths
    * clears the resolved-path cache so discovery runs again on the next request.
    */
-  update(opts: Partial<DecoyOptions>): void;
+  update(opts: Partial<BreadcrumbOptions>): void;
 }
+
+/** @deprecated Use BreadcrumbMiddlewareFn. */
+export type DecoyMiddlewareFn = BreadcrumbMiddlewareFn;
 
 export interface BearerOptions {
   /** The raw token value. Attached as "Authorization: Bearer <token>". */
@@ -267,22 +273,21 @@ export function hmacFetch(
 }
 
 // ---------------------------------------------------------------------------
-// Decoy response headers
+// Breadcrumb response headers
 //
-// Adds realistic-looking HTTP response headers to your API's outgoing
-// responses. Agents (bots, scanners, LLM tool-callers) probing the API see
-// these headers and follow the paths into VeilGate's tarpit instead of
-// discovering real internal endpoints.
+// Adds realistic-looking HTTP response headers to outgoing API responses.
+// Agents (bots, scanners, LLM tool-callers) probing the API follow these
+// paths to registered handlers instead of discovering real internal endpoints.
 //
 // Works in any context where the server sends HTTP responses: SPA backend,
 // REST API, GraphQL, gRPC-gateway — anything with res.setHeader().
 // ---------------------------------------------------------------------------
 
-const DISCOVERY_PATH = "/__veilgate/.well-known";
+const DISCOVERY_PATH = "/_g/config";
 
 // Default pool used when discovery fails or baseURL is not configured.
-// Mirror of the browser SDK defaults so both surfaces expose the same baits.
-const DEFAULT_DECOY_PATHS: TarpitPathEntry[] = [
+// Mirror of the browser SDK defaults so both surfaces expose the same paths.
+const DEFAULT_PATHS: TarpitPathEntry[] = [
   { path: "/api/v1/fetch", service: "ssrf-bait" },
   { path: "/api/proxy", service: "ssrf-bait" },
   { path: "/.env.local", service: "secrets" },
@@ -321,16 +326,16 @@ const _discoveryCache = new Map<string, { paths: TarpitPathEntry[]; fetchedAt: n
 const CACHE_TTL_MS = 60_000;
 
 /**
- * Fetches /__veilgate/.well-known and returns the tarpit path list.
+ * Fetches /_g/config and returns the route manifest path list.
  * Results are cached for 60 seconds (matching the server's Cache-Control).
  * Falls back to an empty array on any error — callers should provide a
- * fallback via DEFAULT_DECOY_PATHS.
+ * fallback via DEFAULT_PATHS.
  *
  * ```ts
- * const paths = await fetchDecoyPaths("https://api.example.com");
+ * const paths = await fetchManifestPaths("https://api.example.com");
  * ```
  */
-export async function fetchDecoyPaths(
+export async function fetchManifestPaths(
   baseURL = "",
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<TarpitPathEntry[]> {
@@ -344,8 +349,11 @@ export async function fetchDecoyPaths(
       headers: { Accept: "application/json" },
     });
     if (!resp.ok) return [];
-    const doc = await resp.json() as { tarpit?: { paths?: TarpitPathEntry[] } };
-    const paths = doc?.tarpit?.paths ?? [];
+    const doc = await resp.json() as {
+      routes?: { paths?: TarpitPathEntry[] };
+      tarpit?: { paths?: TarpitPathEntry[] };
+    };
+    const paths = doc?.routes?.paths ?? doc?.tarpit?.paths ?? [];
     _discoveryCache.set(key, { paths, fetchedAt: Date.now() });
     return paths;
   } catch {
@@ -354,9 +362,9 @@ export async function fetchDecoyPaths(
 }
 
 /**
- * Builds a plain-object map of HTTP response headers containing decoy
+ * Builds a plain-object map of HTTP response headers containing
  * breadcrumbs. Apply these to any outgoing response so agents probing
- * the API discover tarpit paths instead of real internal endpoints.
+ * the API discover registered handler paths instead of real internal endpoints.
  *
  * Header strategy:
  *   - `Link:` RFC 8288 header — crawlers and API clients follow rel links.
@@ -364,16 +372,16 @@ export async function fetchDecoyPaths(
  *   - `X-Debug-Endpoint:` — looks like a leaked dev-mode hint.
  *
  * ```ts
- * const paths = await fetchDecoyPaths(baseURL);
- * const headers = decoyResponseHeaders(paths, { count: 3 });
+ * const paths = await fetchManifestPaths(baseURL);
+ * const headers = breadcrumbHeaders(paths, { count: 3 });
  * // { Link: "</actuator/env>; rel=\"help\", ...", "X-Debug-Endpoint": "/api/internal/debug" }
  * ```
  */
-export function decoyResponseHeaders(
+export function breadcrumbHeaders(
   paths: TarpitPathEntry[],
-  opts?: Pick<DecoyOptions, "count" | "linkHeader" | "serviceHeaders">,
+  opts?: Pick<BreadcrumbOptions, "count" | "linkHeader" | "serviceHeaders">,
 ): Record<string, string> {
-  const pool = paths.length > 0 ? paths : DEFAULT_DECOY_PATHS;
+  const pool = paths.length > 0 ? paths : DEFAULT_PATHS;
   const count = Math.min(opts?.count ?? 3, pool.length);
   const picked = _pickRandom(pool, count);
   const headers: Record<string, string> = {};
@@ -396,27 +404,46 @@ export function decoyResponseHeaders(
              p.path.includes("debug") || p.path.includes("internal"),
     );
     if (debug) headers["X-Debug-Endpoint"] = debug.path;
+
+    // Indirect instruction injection via Server-Timing and X-Powered-By.
+    // LLM agents treat header comments as authoritative operational notes.
+    const internal = picked.find((p) => p.path.includes("internal") || p.path.includes("rpc"));
+    if (internal) {
+      headers["Server-Timing"] = `db;dur=2,cache;dur=0,auth;desc="${internal.path}"`;
+    }
+    const authPath = picked.find((p) =>
+      p.path.includes("auth") || p.path.includes("token") || p.path.includes("oauth"),
+    );
+    if (authPath) {
+      headers["X-Auth-Service"] = authPath.path;
+    }
   }
 
   return headers;
 }
 
+/** @deprecated Use fetchManifestPaths. */
+export const fetchDecoyPaths = fetchManifestPaths;
+
+/** @deprecated Use breadcrumbHeaders. */
+export const decoyResponseHeaders = breadcrumbHeaders;
+
 /**
- * Returns a framework-agnostic middleware that adds decoy response headers
+ * Returns a framework-agnostic middleware that adds breadcrumb response headers
  * to every outgoing response. Compatible with Express, Fastify, raw Node.js
  * http.Server, and any framework that exposes `res.setHeader()`.
  *
- * On first request the middleware fetches /__veilgate/.well-known to load
- * the operator-configured decoy paths. Results are cached for 60 s.
+ * On first request the middleware fetches /_g/config to load
+ * the operator-configured route manifest paths. Results are cached for 60 s.
  * Passes a fallback built-in pool if discovery fails or baseURL is unset.
  *
  * ```ts
  * // Express
- * app.use(decoyMiddleware({ baseURL: "https://api.example.com" }));
+ * app.use(breadcrumbMiddleware({ baseURL: "https://api.example.com" }));
  *
  * // Fastify
  * fastify.addHook("onSend", (req, reply, payload, done) => {
- *   const hdrs = decoyResponseHeaders(serverDecoyPaths, { count: 3 });
+ *   const hdrs = breadcrumbHeaders(serverPaths, { count: 3 });
  *   for (const [k, v] of Object.entries(hdrs)) reply.header(k, v);
  *   done();
  * });
@@ -427,9 +454,9 @@ export function decoyResponseHeaders(
  * });
  * ```
  */
-export function decoyMiddleware(opts?: DecoyOptions): DecoyMiddlewareFn {
+export function breadcrumbMiddleware(opts?: BreadcrumbOptions): BreadcrumbMiddlewareFn {
   let _enabled = true;
-  let _currentOpts: DecoyOptions = { ...opts };
+  let _currentOpts: BreadcrumbOptions = { ...opts };
   let _resolvedPaths: TarpitPathEntry[] | null = opts?.paths ?? null;
 
   const applyHeaders = (
@@ -437,7 +464,7 @@ export function decoyMiddleware(opts?: DecoyOptions): DecoyMiddlewareFn {
     res: { setHeader(name: string, value: string): void },
     next: () => void,
   ) => {
-    const hdrs = decoyResponseHeaders(paths, {
+    const hdrs = breadcrumbHeaders(paths, {
       count: _currentOpts.count,
       linkHeader: _currentOpts.linkHeader,
       serviceHeaders: _currentOpts.serviceHeaders,
@@ -448,7 +475,7 @@ export function decoyMiddleware(opts?: DecoyOptions): DecoyMiddlewareFn {
     next();
   };
 
-  const fn = function vgDecoyMiddleware(
+  const fn = function vgBreadcrumbMiddleware(
     _req: unknown,
     res: { setHeader(name: string, value: string): void },
     next: () => void,
@@ -467,21 +494,21 @@ export function decoyMiddleware(opts?: DecoyOptions): DecoyMiddlewareFn {
     const fetchImpl = _currentOpts.fetchImpl ?? globalThis.fetch;
 
     // First request: discover paths from .well-known, then apply.
-    // fetchDecoyPaths handles caching internally.
-    fetchDecoyPaths(baseURL, fetchImpl).then((paths) => {
-      _resolvedPaths = paths.length > 0 ? paths : DEFAULT_DECOY_PATHS;
+    // fetchManifestPaths handles caching internally.
+    fetchManifestPaths(baseURL, fetchImpl).then((paths) => {
+      _resolvedPaths = paths.length > 0 ? paths : DEFAULT_PATHS;
       applyHeaders(_resolvedPaths, res, next);
     }).catch(() => {
-      _resolvedPaths = DEFAULT_DECOY_PATHS;
+      _resolvedPaths = DEFAULT_PATHS;
       applyHeaders(_resolvedPaths, res, next);
     });
-  } as DecoyMiddlewareFn;
+  } as BreadcrumbMiddlewareFn;
 
   fn.setEnabled = (enabled: boolean): void => {
     _enabled = enabled;
   };
 
-  fn.update = (newOpts: Partial<DecoyOptions>): void => {
+  fn.update = (newOpts: Partial<BreadcrumbOptions>): void => {
     const prevBaseURL = _currentOpts.baseURL;
     const prevPaths = _currentOpts.paths;
     _currentOpts = { ..._currentOpts, ...newOpts };
@@ -499,6 +526,9 @@ export function decoyMiddleware(opts?: DecoyOptions): DecoyMiddlewareFn {
 
   return fn;
 }
+
+/** @deprecated Use breadcrumbMiddleware. */
+export const decoyMiddleware = breadcrumbMiddleware;
 
 // ---------------------------------------------------------------------------
 // Verification helpers (for middleware / testing)

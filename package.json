@@ -1,6 +1,6 @@
 {
   "name": "@veilgate/node",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Node.js SDK for VeilGate — attach bearer tokens and sign HMAC requests in server-to-server calls",
   "main": "dist/index.cjs.js",
   "module": "dist/index.esm.js",
